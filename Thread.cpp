@@ -325,7 +325,13 @@ void Kangaroo::Process(TH_PARAM *params,std::string unit) {
 
     // Save request
     if(workFile.length() > 0 && !endOfSearch) {
-      if((t1 - lastSave) > saveWorkPeriod) {
+      bool ramExceeded = (maxRam > 0.0 && hashTable.GetTotalSizeMB() > maxRam);
+      if((t1 - lastSave) > saveWorkPeriod || ramExceeded) {
+        if(ramExceeded) {
+          ::printf("\nRAM limit %.0fMB reached (%.1fMB used), saving and resetting hash table...\n",
+                   maxRam, hashTable.GetTotalSizeMB());
+          splitWorkfile = true;  // Force split to reset hash table
+        }
         SaveWork(count + offsetCount,t1 - startTime + offsetTime,params,nbCPUThread + nbGPUThread);
         lastSave = t1;
       }

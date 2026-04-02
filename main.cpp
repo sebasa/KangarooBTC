@@ -59,6 +59,7 @@ void printUsage() {
   printf(" -sp port: Server port, default is 17403\n");
   printf(" -nt timeout: Network timeout in millisec (default is 3000ms)\n");
   printf(" -o fileName: output result to fileName\n");
+  printf(" -mr maxRam: Max RAM usage in MB (adjusts DP size automatically)\n");
   printf(" -wh url: Webhook URL to notify on key found (default: https://btcapi.casainteligente.cloud/btcpuzzleinfo)\n");
   printf(" -wn name: Worker name for webhook notifications (default: hostname)\n");
   printf(" -l: List cuda enabled devices\n");
@@ -167,6 +168,7 @@ static string outputFile = "";
 static bool splitWorkFile = false;
 static string webhookUrl = "https://btcapi.casainteligente.cloud/btcpuzzleinfo";
 static string workerName = "";
+static double maxRam = 0.0;
 
 int main(int argc, char* argv[]) {
 
@@ -175,6 +177,9 @@ int main(int argc, char* argv[]) {
 #else
   printf("Kangaroo v" RELEASE "\n");
 #endif
+
+  // Disable stdout buffering for proper output capture
+  setvbuf(stdout, NULL, _IONBF, 0);
 
   // Global Init
   Timer::Init();
@@ -297,6 +302,10 @@ int main(int argc, char* argv[]) {
       CHECKARG("-g",1);
       getInts("gridSize",gridSize,string(argv[a]),',');
       a++;
+    } else if(strcmp(argv[a],"-mr") == 0) {
+      CHECKARG("-mr",1);
+      maxRam = getDouble("maxRam",argv[a]);
+      a++;
     } else if(strcmp(argv[a],"-wh") == 0) {
       CHECKARG("-wh",1);
       webhookUrl = string(argv[a]);
@@ -331,7 +340,7 @@ int main(int argc, char* argv[]) {
   }
 
   Kangaroo *v = new Kangaroo(secp,dp,gpuEnable,workFile,iWorkFile,savePeriod,saveKangaroo,saveKangarooByServer,
-                             maxStep,wtimeout,port,ntimeout,serverIP,outputFile,splitWorkFile,webhookUrl,workerName);
+                             maxStep,wtimeout,port,ntimeout,serverIP,outputFile,splitWorkFile,webhookUrl,workerName,maxRam);
   if(checkFlag) {
     v->Check(gpuId,gridSize);  
     exit(0);

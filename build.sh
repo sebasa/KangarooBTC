@@ -92,28 +92,29 @@ fi
 mkdir -p obj/SECPK1 obj/GPU
 
 # Build
+set +e
 if [ "$CPU_ONLY" -eq 1 ]; then
   echo "[INFO] Building CPU-only version..."
-  if [ "$DEBUG" -eq 1 ]; then
-    make -j"$JOBS" 2>&1
-  else
-    make -j"$JOBS" 2>&1
-  fi
+  make -j"$JOBS"
+  BUILD_RET=$?
 else
   echo "[INFO] Building with GPU support (sm_$CCAP)..."
   if [ "$DEBUG" -eq 1 ]; then
-    make gpu=1 ccap="$CCAP" debug=1 CUDA="$CUDA_PATH" -j"$JOBS" 2>&1
+    make gpu=1 ccap="$CCAP" debug=1 CUDA="$CUDA_PATH" -j"$JOBS"
   else
-    make gpu=1 ccap="$CCAP" CUDA="$CUDA_PATH" -j"$JOBS" 2>&1
+    make gpu=1 ccap="$CCAP" CUDA="$CUDA_PATH" -j"$JOBS"
   fi
+  BUILD_RET=$?
 fi
+set -e
 
 echo ""
 echo "============================================"
-if [ -f kangaroo ]; then
+if [ $BUILD_RET -eq 0 ] && [ -f kangaroo ]; then
   echo " Build successful! Binary: ./kangaroo"
 else
-  echo " Build failed!"
+  echo " Build failed! (exit code: $BUILD_RET)"
+  echo " Check error messages above for details."
   exit 1
 fi
 echo "============================================"

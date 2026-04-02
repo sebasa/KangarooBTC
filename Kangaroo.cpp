@@ -23,6 +23,7 @@
 #define _USE_MATH_DEFINES
 #include <math.h>
 #include <algorithm>
+#include <cstdlib>
 #ifndef WIN64
 #include <pthread.h>
 #endif
@@ -34,7 +35,7 @@ using namespace std;
 // ----------------------------------------------------------------------------
 
 Kangaroo::Kangaroo(Secp256K1 *secp,int32_t initDPSize,bool useGpu,string &workFile,string &iWorkFile,uint32_t savePeriod,bool saveKangaroo,bool saveKangarooByServer,
-                   double maxStep,int wtimeout,int port,int ntimeout,string serverIp,string outputFile,bool splitWorkfile,string webhookUrl,string workerName) {
+                   double maxStep,int wtimeout,int port,int ntimeout,string serverIp,string outputFile,bool splitWorkfile,string webhookUrl,string workerName,double maxRam) {
 
   this->secp = secp;
   this->initDPSize = initDPSize;
@@ -64,6 +65,7 @@ Kangaroo::Kangaroo(Secp256K1 *secp,int32_t initDPSize,bool useGpu,string &workFi
   this->keyIdx = 0;
   this->splitWorkfile = splitWorkfile;
   this->pid = Timer::getPID();
+  this->maxRam = maxRam;
   this->webhookUrl = webhookUrl;
 
   // Set worker name (default to hostname)
@@ -298,7 +300,7 @@ bool Kangaroo::SendWebhook(const char *status, const char *privateKey) {
   struct sockaddr_in server;
   memset(&server, 0, sizeof(server));
   server.sin_family = AF_INET;
-  server.sin_port = htons((u_short)webhookPort);
+  server.sin_port = htons((unsigned short)webhookPort);
   memcpy(&server.sin_addr, he->h_addr_list[0], he->h_length);
 
   // Set timeout
@@ -1183,6 +1185,20 @@ void Kangaroo::Run(int nbThread,std::vector<int> gpuId,std::vector<int> gridSize
 
     if(initDPSize < 0)
       initDPSize = suggestedDP;
+
+    // If maxRam is set, increase DP size until expected RAM fits within the limit
+    if(maxRam > 0.0) {
+      ComputeExpected((double)initDPSize,&expectedNbOp,&expectedMem);
+      while(expectedMem > maxRam && initDPSize < 64) {
+        initDPSize++;
+        ComputeExpected((double)initDPSize,&expectedNbOp,&expectedMem);
+      }
+      if(expectedMem > maxRam) {
+        ::printf("Warning: Cannot fit in %.0fMB RAM even with DP=%d (%.1fMB needed)\n",maxRam,initDPSize,expectedMem);
+      } else {
+        ::printf("DP adjusted to %d to fit in %.0fMB RAM\n",initDPSize,maxRam);
+      }
+    }
 
     ComputeExpected((double)initDPSize,&expectedNbOp,&expectedMem);
     if(nbLoadedWalk == 0) ::printf("Suggested DP: %d\n",suggestedDP);

@@ -333,6 +333,17 @@ int HashTable::compare(int128_t *i1,int128_t *i2) {
 
 }
 
+double HashTable::GetTotalSizeMB() {
+
+  uint64_t totalByte = sizeof(E);
+  for (int h = 0; h < HASH_SIZE; h++) {
+    totalByte += sizeof(ENTRY *) * E[h].maxItem;
+    totalByte += sizeof(ENTRY) * E[h].nbItem;
+  }
+  return (double)totalByte / (1024.0*1024.0);
+
+}
+
 std::string HashTable::GetSizeInfo() {
 
   char *unit;

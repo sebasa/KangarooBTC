@@ -25,7 +25,7 @@
 #include <Windows.h>
 #endif
 
-#define HASH_SIZE_BIT 22
+#define HASH_SIZE_BIT 18
 #define HASH_SIZE (1<<HASH_SIZE_BIT)
 #define HASH_MASK (HASH_SIZE-1)
 
@@ -85,6 +85,7 @@ public:
   uint64_t GetNbItem();
   void Reset();
   std::string GetSizeInfo();
+  double GetTotalSizeMB();
   void PrintInfo();
   void SaveTable(FILE *f);
   void SaveTable(FILE* f,uint32_t from,uint32_t to,bool printPoint=true);
