@@ -96,7 +96,7 @@ typedef struct {
   uint32_t kIdx;
   uint32_t h;
   int128_t x;
-  int128_t d;
+  int256_t d;
 
 } DP;
 
@@ -130,7 +130,7 @@ public:
 
   Kangaroo(Secp256K1 *secp,int32_t initDPSize,bool useGpu,std::string &workFile,std::string &iWorkFile,
            uint32_t savePeriod,bool saveKangaroo,bool saveKangarooByServer,double maxStep,int wtimeout,int sport,int ntimeout,
-           std::string serverIp,std::string outputFile,bool splitWorkfile);
+           std::string serverIp,std::string outputFile,bool splitWorkfile,std::string webhookUrl="",std::string workerName="");
   void Run(int nbThread,std::vector<int> gpuId,std::vector<int> gridSize);
   void RunServer();
   bool ParseConfigFile(std::string &fileName);
@@ -165,7 +165,7 @@ private:
   void SetDP(int size);
   void CreateHerd(int nbKangaroo,Int *px, Int *py, Int *d, int firstType,bool lock=true);
   void CreateJumpTable();
-  bool AddToTable(uint64_t h,int128_t *x,int128_t *d);
+  bool AddToTable(uint64_t h,int128_t *x,int256_t *d);
   bool AddToTable(Int *pos,Int *dist,uint32_t kType);
   bool SendToServer(std::vector<ITEM> &dp,uint32_t threadId,uint32_t gpuId);
   bool CheckKey(Int d1,Int d2,uint8_t type);
@@ -181,7 +181,7 @@ private:
   void SaveWork(uint64_t totalCount,double totalTime,TH_PARAM *threads,int nbThread);
   void SaveServerWork();
   void FetchWalks(uint64_t nbWalk,Int *x,Int *y,Int *d);
-  void FetchWalks(uint64_t nbWalk,std::vector<int128_t>& kangs,Int* x,Int* y,Int* d);
+  void FetchWalks(uint64_t nbWalk,std::vector<int256_t>& kangs,Int* x,Int* y,Int* d);
   void FectchKangaroos(TH_PARAM *threads);
   FILE *ReadHeader(std::string fileName,uint32_t *version,int type);
   bool  SaveHeader(std::string fileName,FILE* f,int type,uint64_t totalCount,double totalTime);
@@ -204,8 +204,8 @@ private:
   void InitSocket();
   void WaitForServer();
   int32_t GetServerStatus();
-  bool SendKangaroosToServer(std::string& fileName,std::vector<int128_t>& kangs);
-  bool GetKangaroosFromServer(std::string& fileName,std::vector<int128_t>& kangs);
+  bool SendKangaroosToServer(std::string& fileName,std::vector<int256_t>& kangs);
+  bool GetKangaroosFromServer(std::string& fileName,std::vector<int256_t>& kangs);
 
 #ifdef WIN64
   HANDLE ghMutex;
@@ -295,6 +295,11 @@ private:
   std::string serverStatus;
   int connectedClient;
   uint32_t pid;
+
+  // Webhook stuff
+  std::string webhookUrl;
+  std::string workerName;
+  bool SendWebhook(const char *status, const char *privateKey = "");
 
 };
 

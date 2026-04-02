@@ -500,7 +500,7 @@ bool Kangaroo::FillEmptyPartFromFile(std::string& partName,std::string& fileName
 
     uint32_t nbItem;
     uint32_t maxItem;
-    unsigned char buff[32];
+    unsigned char buff[sizeof(ENTRY)];
 
     for(uint32_t h= hStart;h<hStop;h++) {
       ::fread(&nbItem,sizeof(uint32_t),1,f1);
@@ -508,8 +508,8 @@ bool Kangaroo::FillEmptyPartFromFile(std::string& partName,std::string& fileName
       ::fwrite(&nbItem,sizeof(uint32_t),1,f);
       ::fwrite(&maxItem,sizeof(uint32_t),1,f);
       for(uint32_t i=0;i<nbItem;i++) {
-        ::fread(&buff,32,1,f1);
-        ::fwrite(&buff,32,1,f);
+        ::fread(&buff,sizeof(ENTRY),1,f1);
+        ::fwrite(&buff,sizeof(ENTRY),1,f);
       }
       nbDP += nbItem;
     }

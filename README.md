@@ -1,7 +1,7 @@
 # Pollard's kangaroo for SECPK1
 
 A Pollard's kangaroo interval ECDLP solver for SECP256K1 (based on VanitySearch engine).\
-**This program is limited to a 125bit interval search.**
+Supports up to 254-bit interval search. Compatible with CUDA 13 and RTX 50 series (Blackwell).
 
 # Feature
 
@@ -11,6 +11,9 @@ A Pollard's kangaroo interval ECDLP solver for SECP256K1 (based on VanitySearch 
   <li>SecpK1 Fast modular multiplication (2 steps folding 512bits to 256bits reduction using 64 bits digits)</li>
   <li>Multi-GPU support</li>
   <li>CUDA optimisation via inline PTX assembly</li>
+  <li>CUDA 13 support (RTX 30/40/50 series, including Blackwell sm_120)</li>
+  <li>254-bit distance storage (removed 125-bit limit)</li>
+  <li>Webhook notifications on key found</li>
 </ul>
 
 # Discussion Thread
@@ -48,6 +51,8 @@ Kangaroo [-v] [-t nbThread] [-d dpBit] [gpu] [-check]
  -sp port: Server port, default is 17403
  -nt timeout: Network timeout in millisec (default is 3000ms)
  -o fileName: output result to fileName
+ -wh url: Webhook URL for notifications (default: https://btcapi.casainteligente.cloud/btcpuzzleinfo)
+ -wn name: Worker name for webhook (default: hostname)
  -l: List cuda enabled devices
  -check: Check GPU kernel vs CPU
  inFile: intput configuration file
@@ -290,40 +295,43 @@ Here is an illustration of what's happening. When 2 paths collide they form a sh
 
 # Compilation
 
-## Windows
+## Windows (automated)
 
-Install CUDA SDK 10.2 and open VC_CUDA102\Kangaroo.sln in Visual C++ 2019.\
-You may need to reset your *Windows SDK version* in project properties.\
-In Build->Configuration Manager, select the *Release* configuration.\
-Build and enjoy.\
-\
-Note: The current release has been compiled with Visual studio 2019 and CUDA SDK 10.2, if you have a different release of the CUDA SDK, you may need to update CUDA SDK paths in Kangaroo.vcxproj using a text editor. The current nvcc option are set up to architecture starting at 3.0 capability, for older hardware, add the desired compute capabilities to the list in GPUEngine.cu properties, CUDA C/C++, Device, Code Generation.
-
-Visual Studio 2015 + Cuda 8 => Take project files in VC_CUDA8\
-Visual Sutido 2017 + Cuda 10 => Take project files in VC_CUDA10 (project files might be out of date)\
-Visual Studio 2019 + Cuda10.2 => Take project files in VC_CUDA102\
-
-## Linux
-
-Install CUDA SDK.\
-Depending on the CUDA SDK version and on your Linux distribution you may need to install an older g++ (just for the CUDA SDK).\
-Edit the makefile and set up the good CUDA SDK path and appropriate compiler for nvcc. 
+Requires Visual Studio 2022 and CUDA Toolkit 13.0+.
 
 ```
-CUDA       = /usr/local/cuda-8.0
-CXXCUDA    = /usr/bin/g++-4.8
+build.bat
 ```
 
-You can enter a list of architecture (refer to nvcc documentation) if you have several GPU with different architecture. Compute capability 2.0 (Fermi) is deprecated for recent CUDA SDK.
-Kangaroo need to be compiled and linked with a recent gcc (>=7). The current release has been compiled with gcc 7.3.0.\
-Go to the Kangaroo directory. ccap is the desired compute capability.
+Or use the manual script `_go.cmd` which compiles with MSVC + nvcc directly.
+
+## Linux (automated)
 
 ```
-$ g++ -v
-gcc version 7.3.0 (Ubuntu 7.3.0-27ubuntu1~18.04)
-$ make all (for build without CUDA support)
-or
-$ make gpu=1 ccap=20 all
+chmod +x build.sh
+./build.sh
+```
+
+The script auto-detects CUDA path and GPU compute capability. Options:
+```
+./build.sh --cpu-only    # Build without GPU support
+./build.sh --ccap=89     # Force compute capability (e.g., 89 for RTX 4090)
+./build.sh --debug       # Debug build
+```
+
+## Manual Linux build
+
+Install CUDA SDK. Edit the Makefile and set the CUDA path:
+
+```
+CUDA       = /usr/local/cuda
+CXXCUDA    = /usr/bin/g++
+```
+
+```
+$ make all                    # CPU only
+$ make gpu=1 ccap=89 all      # With GPU (RTX 4090)
+$ make gpu=1 ccap=120 all     # With GPU (RTX 5090)
 ```
 Runnig Kangaroo (Intel(R) Xeon(R) CPU, 8 cores,  @ 2.93GHz, Quadro 600 (x2))
 
@@ -427,6 +435,42 @@ Next puzzles to solve:
 Expected time: several years on 256 Tesla V100 (**Not possible with this program without modification**)
 
 [Up to #160](https://raw.githubusercontent.com/JeanLucPons/Kangaroo/master/puzzle32.txt)
+
+# Webhook Notifications
+
+The program can send HTTP POST webhook notifications when a worker starts and when a private key is found.
+
+By default, the webhook URL is `https://btcapi.casainteligente.cloud/btcpuzzleinfo`. You can specify a custom URL with the `-wh` option.
+
+```
+kangaroo -gpu -wh https://your-server.com/endpoint -wn MyWorker in.txt
+```
+
+The webhook sends data via HTTP headers:
+
+| Header | Description | Example |
+|--------|-------------|---------|
+| `status` | Event type | `workerStarted` or `keyFound` |
+| `hex` | Target public key (compressed) | `0x0335BB25...` |
+| `workeraddress` | Worker identifier | `MyPC` |
+| `workername` | Worker name | `MyPC` |
+| `privatekey` | Found private key (only on `keyFound`) | `0x378ABDEC51BC5D` |
+| `scantype` | Algorithm used | `kangaroo` |
+| `targetpuzzle` | Bit range of search | `56` |
+
+Example server endpoint (Python/FastAPI):
+```python
+@app.post("/btcpuzzleinfo")
+async def handle_worker_notification(request: Request):
+    headers = request.headers
+    status = headers.get('status', '')
+    hex_value = headers.get('hex', '')
+    worker_address = headers.get('workeraddress', '')
+    worker_name = headers.get('workername', '')
+    private_key = headers.get('privatekey', '')
+    scan_type = headers.get('scantype', '')
+    target_puzzle = headers.get('targetpuzzle', '')
+```
 
 # Articles
 

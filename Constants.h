@@ -32,7 +32,9 @@
 #define GPU_GRP_SIZE 128
 
 // GPU number of run per kernel call
-#define NB_RUN 64
+// Lower values reduce "items lost" on fast modern GPUs (RTX 40/50 series)
+// Higher values reduce kernel launch overhead
+#define NB_RUN 32
 
 // Kangaroo type
 #define TAME 0  // Tame kangaroo

@@ -34,7 +34,7 @@ using namespace std;
 // ----------------------------------------------------------------------------
 
 Kangaroo::Kangaroo(Secp256K1 *secp,int32_t initDPSize,bool useGpu,string &workFile,string &iWorkFile,uint32_t savePeriod,bool saveKangaroo,bool saveKangarooByServer,
-                   double maxStep,int wtimeout,int port,int ntimeout,string serverIp,string outputFile,bool splitWorkfile) {
+                   double maxStep,int wtimeout,int port,int ntimeout,string serverIp,string outputFile,bool splitWorkfile,string webhookUrl,string workerName) {
 
   this->secp = secp;
   this->initDPSize = initDPSize;
@@ -64,6 +64,26 @@ Kangaroo::Kangaroo(Secp256K1 *secp,int32_t initDPSize,bool useGpu,string &workFi
   this->keyIdx = 0;
   this->splitWorkfile = splitWorkfile;
   this->pid = Timer::getPID();
+  this->webhookUrl = webhookUrl;
+
+  // Set worker name (default to hostname)
+  if(workerName.length() > 0) {
+    this->workerName = workerName;
+  } else {
+    char hostname[256];
+#ifdef WIN64
+    DWORD size = sizeof(hostname);
+    if(GetComputerNameA(hostname, &size))
+      this->workerName = string(hostname);
+    else
+      this->workerName = "unknown";
+#else
+    if(gethostname(hostname, sizeof(hostname)) == 0)
+      this->workerName = string(hostname);
+    else
+      this->workerName = "unknown";
+#endif
+  }
 
   CPU_GRP_SIZE = 1024;
 
@@ -173,6 +193,174 @@ void Kangaroo::SetDP(int size) {
 
 // ----------------------------------------------------------------------------
 
+bool Kangaroo::SendWebhook(const char *status, const char *privateKey) {
+
+  if(webhookUrl.length() == 0)
+    return false;
+
+  // Parse URL: https://host[:port]/path or http://host[:port]/path
+  string url = webhookUrl;
+  bool useSSL = false;
+  int defaultPort = 80;
+
+  if(url.substr(0, 8) == "https://") {
+    // We cannot do real TLS with raw sockets, warn and skip
+    // But we'll try a plain HTTP POST anyway (works behind reverse proxies / local endpoints)
+    url = url.substr(8);
+    useSSL = true;
+    defaultPort = 443;
+  } else if(url.substr(0, 7) == "http://") {
+    url = url.substr(7);
+  }
+
+  // Extract host, port, path
+  string host, path;
+  int webhookPort = defaultPort;
+  size_t pathPos = url.find('/');
+  if(pathPos != string::npos) {
+    host = url.substr(0, pathPos);
+    path = url.substr(pathPos);
+  } else {
+    host = url;
+    path = "/";
+  }
+
+  size_t colonPos = host.find(':');
+  if(colonPos != string::npos) {
+    webhookPort = atoi(host.substr(colonPos + 1).c_str());
+    host = host.substr(0, colonPos);
+  }
+
+  // Build hex value (public key of target)
+  string hexValue = "";
+  if(keyIdx < keysToSearch.size())
+    hexValue = secp->GetPublicKeyHex(true, keysToSearch[keyIdx]);
+
+  // Build target puzzle info
+  char puzzleStr[64];
+  snprintf(puzzleStr, sizeof(puzzleStr), "%d", rangePower);
+
+  // Build HTTP POST request with custom headers
+  string body = "";
+  char request[4096];
+  snprintf(request, sizeof(request),
+    "POST %s HTTP/1.1\r\n"
+    "Host: %s\r\n"
+    "Content-Type: text/plain\r\n"
+    "Content-Length: %d\r\n"
+    "Connection: close\r\n"
+    "status: %s\r\n"
+    "hex: %s\r\n"
+    "workeraddress: %s\r\n"
+    "workername: %s\r\n"
+    "privatekey: %s\r\n"
+    "scantype: kangaroo\r\n"
+    "targetpuzzle: %s\r\n"
+    "\r\n",
+    path.c_str(),
+    host.c_str(),
+    (int)body.length(),
+    status,
+    hexValue.c_str(),
+    workerName.c_str(),
+    workerName.c_str(),
+    privateKey,
+    puzzleStr);
+
+  // Init winsock if needed
+#ifdef WIN64
+  static bool wsaInit = false;
+  if(!wsaInit) {
+    WSADATA WSAData;
+    int err = WSAStartup(MAKEWORD(2,2), &WSAData);
+    if(err != 0) {
+      ::printf("Webhook: WSAStartup failed error: %d\n", err);
+      return false;
+    }
+    wsaInit = true;
+  }
+#endif
+
+  // Resolve hostname
+  struct hostent *he = gethostbyname(host.c_str());
+  if(he == NULL) {
+    ::printf("Webhook: Cannot resolve %s\n", host.c_str());
+    return false;
+  }
+
+  // Create socket
+  SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if(sock < 0) {
+    ::printf("Webhook: Cannot create socket\n");
+    return false;
+  }
+
+  struct sockaddr_in server;
+  memset(&server, 0, sizeof(server));
+  server.sin_family = AF_INET;
+  server.sin_port = htons((u_short)webhookPort);
+  memcpy(&server.sin_addr, he->h_addr_list[0], he->h_length);
+
+  // Set timeout
+#ifdef WIN64
+  DWORD timeout = 10000;
+  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
+  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
+#else
+  struct timeval tv;
+  tv.tv_sec = 10;
+  tv.tv_usec = 0;
+  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
+  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+#endif
+
+  if(connect(sock, (struct sockaddr *)&server, sizeof(server)) < 0) {
+    ::printf("Webhook: Cannot connect to %s:%d\n", host.c_str(), webhookPort);
+#ifdef WIN64
+    closesocket(sock);
+#else
+    close(sock);
+#endif
+    return false;
+  }
+
+  // Send request
+  int len = (int)strlen(request);
+  int sent = send(sock, request, len, 0);
+  if(sent != len) {
+    ::printf("Webhook: Send failed\n");
+#ifdef WIN64
+    closesocket(sock);
+#else
+    close(sock);
+#endif
+    return false;
+  }
+
+  // Read response (just first line to check status)
+  char response[1024];
+  memset(response, 0, sizeof(response));
+  recv(sock, response, sizeof(response) - 1, 0);
+
+#ifdef WIN64
+  closesocket(sock);
+#else
+  close(sock);
+#endif
+
+  // Check HTTP status
+  bool success = (strstr(response, "200") != NULL);
+  if(success) {
+    ::printf("Webhook: %s notification sent to %s\n", status, webhookUrl.c_str());
+  } else {
+    ::printf("Webhook: Failed (%s) - %.80s\n", status, response);
+  }
+
+  return success;
+}
+
+// ----------------------------------------------------------------------------
+
 bool Kangaroo::Output(Int *pk,char sInfo,int sType) {
 
 
@@ -208,6 +396,12 @@ bool Kangaroo::Output(Int *pk,char sInfo,int sType) {
 
   if(needToClose)
     fclose(f);
+
+  // Send webhook notification for key found
+  if(webhookUrl.length() > 0) {
+    string pkHex = pk->GetBase16();
+    SendWebhook("keyFound", pkHex.c_str());
+  }
 
   return true;
 
@@ -313,7 +507,7 @@ bool Kangaroo::AddToTable(Int *pos,Int *dist,uint32_t kType) {
 
 }
 
-bool Kangaroo::AddToTable(uint64_t h,int128_t *x,int128_t *d) {
+bool Kangaroo::AddToTable(uint64_t h,int128_t *x,int256_t *d) {
 
   int addStatus = hashTable.Add(h,x,d);
   if(addStatus== ADD_COLLISION) {
@@ -520,7 +714,7 @@ void Kangaroo::SolveKeyGPU(TH_PARAM *ph) {
   vector<ITEM> gpuFound;
   GPUEngine *gpu;
 
-  gpu = new GPUEngine(ph->gridSizeX,ph->gridSizeY,ph->gpuId,65536 * 2);
+  gpu = new GPUEngine(ph->gridSizeX,ph->gridSizeY,ph->gpuId,65536 * 32);
 
   if(keyIdx == 0)
     ::printf("GPU: %s (%.1f MB used)\n",gpu->deviceName.c_str(),gpu->GetMemory() / 1048576.0);
@@ -747,7 +941,7 @@ void Kangaroo::CreateJumpTable() {
   int jumpBit = rangePower / 2 + 1;
 #endif
 
-  if(jumpBit > 128) jumpBit = 128;
+  if(jumpBit > 254) jumpBit = 254;
   int maxRetry = 100;
   bool ok = false;
   double distAvg;
@@ -1003,6 +1197,13 @@ void Kangaroo::Run(int nbThread,std::vector<int> gpuId,std::vector<int> gridSize
   }
 
   SetDP(initDPSize);
+
+  // Send webhook notification for worker started
+  if(webhookUrl.length() > 0) {
+    ::printf("Webhook URL: %s\n", webhookUrl.c_str());
+    ::printf("Worker name: %s\n", workerName.c_str());
+    SendWebhook("workerStarted");
+  }
 
   // Fetch kangaroos (if any)
   FectchKangaroos(params);

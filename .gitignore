@@ -12,3 +12,11 @@ CMakeLists.txt
 kangaroo
 cmake-build-debug/
 *.prf
+135.bat
+135.in
+.claude/settings.local.json
+*.log
+*.cmd
+^
+*.work
+*.exe
