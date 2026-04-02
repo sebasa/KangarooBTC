@@ -51,7 +51,7 @@ Kangaroo [-v] [-t nbThread] [-d dpBit] [gpu] [-check]
  -sp port: Server port, default is 17403
  -nt timeout: Network timeout in millisec (default is 3000ms)
  -o fileName: output result to fileName
- -wh url: Webhook URL for notifications (default: https://btcapi.casainteligente.cloud/btcpuzzleinfo)
+ -wh url: Webhook URL for notifications
  -wn name: Worker name for webhook (default: hostname)
  -l: List cuda enabled devices
  -check: Check GPU kernel vs CPU
