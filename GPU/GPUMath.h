@@ -47,8 +47,12 @@
 #define MADD(r,a,b,c) asm volatile ("madc.hi.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c));
 #define MADDS(r,a,b,c) asm volatile ("madc.hi.s64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c));
 
-// Jump distance (256 bits)
+// Jump distance (128-bit for non-sym, 256-bit for sym)
+#ifdef USE_SYMMETRY
 __device__ __constant__ uint64_t jD[NB_JUMP][4];
+#else
+__device__ __constant__ uint64_t jD[NB_JUMP][2];
+#endif
 // jump points
 __device__ __constant__ uint64_t jPx[NB_JUMP][4];
 __device__ __constant__ uint64_t jPy[NB_JUMP][4];
@@ -176,6 +180,8 @@ USUB(r[4],0ULL,r[4]); }
 
 // ---------------------------------------------------------------------------------------
 
+#ifdef USE_SYMMETRY
+// 256-bit distance: x(8 u32) + d(8 u32) + kIdx(2 u32) = 18 words
 #define OutputDP(x,d,idx) {\
 out[pos*ITEM_SIZE32 + 1] = ((uint32_t *)x)[0]; \
 out[pos*ITEM_SIZE32 + 2] = ((uint32_t *)x)[1]; \
@@ -196,14 +202,31 @@ out[pos*ITEM_SIZE32 + 16] = ((uint32_t *)d)[7]; \
 out[pos*ITEM_SIZE32 + 17] = ((uint32_t *)idx)[0]; \
 out[pos*ITEM_SIZE32 + 18] = ((uint32_t *)idx)[1]; \
 }
+#else
+// 128-bit accumulator: x(8 u32) + d(4 u32) + kIdx(2 u32) = 14 words
+#define OutputDP(x,d,idx) {\
+out[pos*ITEM_SIZE32 + 1] = ((uint32_t *)x)[0]; \
+out[pos*ITEM_SIZE32 + 2] = ((uint32_t *)x)[1]; \
+out[pos*ITEM_SIZE32 + 3] = ((uint32_t *)x)[2]; \
+out[pos*ITEM_SIZE32 + 4] = ((uint32_t *)x)[3]; \
+out[pos*ITEM_SIZE32 + 5] = ((uint32_t *)x)[4]; \
+out[pos*ITEM_SIZE32 + 6] = ((uint32_t *)x)[5]; \
+out[pos*ITEM_SIZE32 + 7] = ((uint32_t *)x)[6]; \
+out[pos*ITEM_SIZE32 + 8] = ((uint32_t *)x)[7]; \
+out[pos*ITEM_SIZE32 + 9] = ((uint32_t *)d)[0]; \
+out[pos*ITEM_SIZE32 + 10] = ((uint32_t *)d)[1]; \
+out[pos*ITEM_SIZE32 + 11] = ((uint32_t *)d)[2]; \
+out[pos*ITEM_SIZE32 + 12] = ((uint32_t *)d)[3]; \
+out[pos*ITEM_SIZE32 + 13] = ((uint32_t *)idx)[0]; \
+out[pos*ITEM_SIZE32 + 14] = ((uint32_t *)idx)[1]; \
+}
+#endif
 
 // ---------------------------------------------------------------------------------------
 
 #ifdef USE_SYMMETRY
+// USE_SYMMETRY: 256-bit distance (4 words), KSIZE=13
 __device__ void LoadKangaroos(uint64_t *a,uint64_t px[GPU_GRP_SIZE][4],uint64_t py[GPU_GRP_SIZE][4],uint64_t dist[GPU_GRP_SIZE][4],uint64_t *jumps) {
-#else
-__device__ void LoadKangaroos(uint64_t * a,uint64_t px[GPU_GRP_SIZE][4],uint64_t py[GPU_GRP_SIZE][4],uint64_t dist[GPU_GRP_SIZE][4]) {
-#endif
 
   __syncthreads();
 
@@ -229,13 +252,42 @@ __device__ void LoadKangaroos(uint64_t * a,uint64_t px[GPU_GRP_SIZE][4],uint64_t
     d64[2] = (a)[IDX + 10 * blockDim.x + stride];
     d64[3] = (a)[IDX + 11 * blockDim.x + stride];
 
-#ifdef USE_SYMMETRY
     jumps[g] = (a)[IDX + 12 * blockDim.x + stride];
-#endif
   }
 
 }
+#else
+// Non-sym: 128-bit accumulator (2 words), KSIZE=10
+__device__ void LoadKangaroos(uint64_t *a,uint64_t px[GPU_GRP_SIZE][4],uint64_t py[GPU_GRP_SIZE][4],uint64_t dist[GPU_GRP_SIZE][2]) {
 
+  __syncthreads();
+
+  for(int g = 0; g<GPU_GRP_SIZE; g++) {
+
+    uint64_t *x64 = (uint64_t *)px[g];
+    uint64_t *y64 = (uint64_t *)py[g];
+    uint64_t *d64 = (uint64_t *)dist[g];
+    uint32_t stride = g * KSIZE * blockDim.x;
+
+    x64[0] = (a)[IDX + 0 * blockDim.x + stride];
+    x64[1] = (a)[IDX + 1 * blockDim.x + stride];
+    x64[2] = (a)[IDX + 2 * blockDim.x + stride];
+    x64[3] = (a)[IDX + 3 * blockDim.x + stride];
+
+    y64[0] = (a)[IDX + 4 * blockDim.x + stride];
+    y64[1] = (a)[IDX + 5 * blockDim.x + stride];
+    y64[2] = (a)[IDX + 6 * blockDim.x + stride];
+    y64[3] = (a)[IDX + 7 * blockDim.x + stride];
+
+    d64[0] = (a)[IDX + 8 * blockDim.x + stride];
+    d64[1] = (a)[IDX + 9 * blockDim.x + stride];
+    // 128-bit only: no slots 10,11
+  }
+
+}
+#endif
+
+#ifdef USE_SYMMETRY
 __device__ void LoadDists(uint64_t* a,uint64_t dist[GPU_GRP_SIZE][4]) {
 
   __syncthreads();
@@ -253,6 +305,23 @@ __device__ void LoadDists(uint64_t* a,uint64_t dist[GPU_GRP_SIZE][4]) {
   }
 
 }
+#else
+__device__ void LoadDists(uint64_t* a,uint64_t dist[GPU_GRP_SIZE][2]) {
+
+  __syncthreads();
+
+  for(int g = 0; g < GPU_GRP_SIZE; g++) {
+
+    uint64_t* d64 = (uint64_t*)dist[g];
+    uint32_t stride = g * KSIZE * blockDim.x;
+
+    d64[0] = (a)[IDX + 8 * blockDim.x + stride];
+    d64[1] = (a)[IDX + 9 * blockDim.x + stride];
+
+  }
+
+}
+#endif
 
 __device__ void LoadKangaroo(uint64_t* a,uint32_t stride,uint64_t px[4],uint64_t py[4]) {
 
@@ -285,10 +354,8 @@ __device__ void LoadKangaroo(uint64_t* a,uint32_t stride,uint64_t px[4]) {
 // ---------------------------------------------------------------------------------------
 
 #ifdef USE_SYMMETRY
+// USE_SYMMETRY: 256-bit distance (4 words), KSIZE=13
 __device__ void StoreKangaroos(uint64_t *a,uint64_t px[GPU_GRP_SIZE][4],uint64_t py[GPU_GRP_SIZE][4],uint64_t dist[GPU_GRP_SIZE][4],uint64_t *jumps) {
-#else
-__device__ void StoreKangaroos(uint64_t * a,uint64_t px[GPU_GRP_SIZE][4],uint64_t py[GPU_GRP_SIZE][4],uint64_t dist[GPU_GRP_SIZE][4]) {
-#endif
 
   __syncthreads();
 
@@ -313,12 +380,39 @@ __device__ void StoreKangaroos(uint64_t * a,uint64_t px[GPU_GRP_SIZE][4],uint64_
     (a)[IDX + 10 * blockDim.x + stride] = d64[2];
     (a)[IDX + 11 * blockDim.x + stride] = d64[3];
 
-#ifdef USE_SYMMETRY
     (a)[IDX + 12 * blockDim.x + stride] = jumps[g];
-#endif
   }
 
 }
+#else
+// Non-sym: 128-bit accumulator (2 words), KSIZE=10
+__device__ void StoreKangaroos(uint64_t *a,uint64_t px[GPU_GRP_SIZE][4],uint64_t py[GPU_GRP_SIZE][4],uint64_t dist[GPU_GRP_SIZE][2]) {
+
+  __syncthreads();
+
+  for(int g = 0; g < GPU_GRP_SIZE; g++) {
+    uint64_t *x64 = (uint64_t *)px[g];
+    uint64_t *y64 = (uint64_t *)py[g];
+    uint64_t *d64 = (uint64_t *)dist[g];
+    uint32_t stride = g * KSIZE * blockDim.x;
+
+    (a)[IDX + 0 * blockDim.x + stride] = x64[0];
+    (a)[IDX + 1 * blockDim.x + stride] = x64[1];
+    (a)[IDX + 2 * blockDim.x + stride] = x64[2];
+    (a)[IDX + 3 * blockDim.x + stride] = x64[3];
+
+    (a)[IDX + 4 * blockDim.x + stride] = y64[0];
+    (a)[IDX + 5 * blockDim.x + stride] = y64[1];
+    (a)[IDX + 6 * blockDim.x + stride] = y64[2];
+    (a)[IDX + 7 * blockDim.x + stride] = y64[3];
+
+    (a)[IDX + 8 * blockDim.x + stride] = d64[0];
+    (a)[IDX + 9 * blockDim.x + stride] = d64[1];
+    // 128-bit only: no slots 10,11
+  }
+
+}
+#endif
 
 __device__ void StoreKangaroo(uint64_t* a,uint32_t stride,uint64_t px[4],uint64_t py[4]) {
 
@@ -337,6 +431,7 @@ __device__ void StoreKangaroo(uint64_t* a,uint32_t stride,uint64_t px[4],uint64_
 
 }
 
+#ifdef USE_SYMMETRY
 __device__ void StoreDists(uint64_t* a,uint64_t dist[GPU_GRP_SIZE][4]) {
 
   __syncthreads();
@@ -353,6 +448,22 @@ __device__ void StoreDists(uint64_t* a,uint64_t dist[GPU_GRP_SIZE][4]) {
   }
 
 }
+#else
+__device__ void StoreDists(uint64_t* a,uint64_t dist[GPU_GRP_SIZE][2]) {
+
+  __syncthreads();
+
+  for(int g = 0; g < GPU_GRP_SIZE; g++) {
+    uint64_t* d64 = (uint64_t*)dist[g];
+    uint32_t stride = g * KSIZE * blockDim.x;
+
+    (a)[IDX + 8 * blockDim.x + stride] = d64[0];
+    (a)[IDX + 9 * blockDim.x + stride] = d64[1];
+
+  }
+
+}
+#endif
 
 // ---------------------------------------------------------------------------------------
 

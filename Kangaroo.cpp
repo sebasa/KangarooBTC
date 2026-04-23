@@ -944,6 +944,10 @@ void Kangaroo::CreateJumpTable() {
 #endif
 
   if(jumpBit > 254) jumpBit = 254;
+#ifndef USE_SYMMETRY
+  // GPU stores jump distances as 128-bit values; cap to prevent truncation
+  if(useGpu && jumpBit > 127) jumpBit = 127;
+#endif
   int maxRetry = 100;
   bool ok = false;
   double distAvg;

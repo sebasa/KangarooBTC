@@ -10,18 +10,18 @@ setlocal enabledelayedexpansion
 set CPU_ONLY=0
 set DEBUG=0
 set CCAP=
-set CUDA_PATH=
+set CUDA_PATH_LOC=
 set NVCC=
 
 REM Parse arguments
 :parse_args
 if "%~1"=="" goto :done_args
 if /i "%~1"=="/cpu-only" (set CPU_ONLY=1& shift& goto :parse_args)
-if /i "%~1"=="/debug" (set DEBUG=1& shift& goto :parse_args)
-if /i "%~1"=="/help" goto :show_help
-if /i "%~1"=="/?" goto :show_help
-echo %~1| findstr /r "^/ccap=" >nul 2>&1
-if %errorlevel%==0 (
+if /i "%~1"=="/debug"    (set DEBUG=1&    shift& goto :parse_args)
+if /i "%~1"=="/help"     goto :show_help
+if /i "%~1"=="/?"        goto :show_help
+echo %~1 | findstr /r "^/ccap=" >nul 2>&1
+if not errorlevel 1 (
     for /f "tokens=2 delims==" %%a in ("%~1") do set CCAP=%%a
     shift& goto :parse_args
 )
@@ -71,34 +71,35 @@ echo [ERROR] Visual Studio not found. Install VS 2019 or later with C++ workload
 exit /b 1
 
 :found_vs
-call "%VCVARS%" >nul 2>&1
+call "!VCVARS!" >nul 2>&1
 
 REM Detect CUDA
 if %CPU_ONLY%==1 goto :skip_cuda
 
-REM Try CUDA_PATH env var first
+REM Try env var CUDA_PATH first
 if defined CUDA_PATH (
     if exist "%CUDA_PATH%\bin\nvcc.exe" (
+        set "CUDA_PATH_LOC=%CUDA_PATH%"
         set "NVCC=%CUDA_PATH%\bin\nvcc.exe"
         goto :found_cuda
     )
 )
 
-REM Search common CUDA install locations
+REM Search common CUDA install locations (last dir = newest version)
 for /d %%d in ("C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v*") do (
     if exist "%%d\bin\nvcc.exe" (
-        set "CUDA_PATH=%%d"
+        set "CUDA_PATH_LOC=%%d"
         set "NVCC=%%d\bin\nvcc.exe"
-        goto :found_cuda
     )
 )
+if defined NVCC goto :found_cuda
 
 REM Try nvcc in PATH
 where nvcc.exe >nul 2>&1
-if %errorlevel%==0 (
+if not errorlevel 1 (
     for /f "tokens=*" %%p in ('where nvcc.exe') do (
         set "NVCC=%%p"
-        for %%i in ("%%~dpi..") do set "CUDA_PATH=%%~fi"
+        set "CUDA_PATH_LOC=%%~dpp.."
         goto :found_cuda
     )
 )
@@ -108,26 +109,22 @@ set CPU_ONLY=1
 goto :skip_cuda
 
 :found_cuda
-for /f "tokens=5" %%v in ('"%NVCC%" --version ^| findstr "release"') do (
-    set CUDA_VER=%%v
-    set CUDA_VER=!CUDA_VER:,=!
-)
-echo [INFO] CUDA found: %CUDA_PATH% (version %CUDA_VER%)
+echo [INFO] CUDA found: !CUDA_PATH_LOC!
 
-REM Auto-detect compute capability
+REM Auto-detect compute capability (no skip=1 ? noheader format has no header line)
 if "%CCAP%"=="" (
     where nvidia-smi.exe >nul 2>&1
-    if !errorlevel!==0 (
-        for /f "skip=1 tokens=*" %%g in ('nvidia-smi --query-gpu^=compute_cap --format^=csv,noheader 2^>nul') do (
+    if not errorlevel 1 (
+        for /f "tokens=*" %%g in ('nvidia-smi --query-gpu^=compute_cap --format^=csv^,noheader 2^>nul') do (
             set "GPU_CC=%%g"
             set "GPU_CC=!GPU_CC: =!"
             set "CCAP=!GPU_CC:.=!"
-            echo [INFO] Detected GPU compute capability: !GPU_CC! (sm_!CCAP!)
+            echo [INFO] Detected GPU sm_!CCAP!
             goto :ccap_done
         )
     )
     set CCAP=89
-    echo [INFO] Could not detect GPU. Using default: sm_89
+    echo [INFO] GPU not detected. Using default sm_89
 )
 :ccap_done
 
@@ -142,79 +139,73 @@ REM Source files
 set SRC_CPP=main.cpp Kangaroo.cpp HashTable.cpp Thread.cpp Timer.cpp Check.cpp Backup.cpp Network.cpp Merge.cpp PartMerge.cpp
 set SRC_SECPK1=SECPK1\Int.cpp SECPK1\IntMod.cpp SECPK1\IntGroup.cpp SECPK1\Point.cpp SECPK1\SECP256K1.cpp SECPK1\Random.cpp
 
-REM Compiler flags
+REM Compiler flags ? avoid nested quotes by using a temp variable for CUDA include
 set CXXFLAGS=/O2 /EHsc /W2 /D WIN64 /I. /nologo
+if %DEBUG%==1 set CXXFLAGS=/Zi /Od /EHsc /W2 /D WIN64 /I. /nologo
 if %CPU_ONLY%==0 (
-    set "CXXFLAGS=%CXXFLAGS% /DWITHGPU /I"%CUDA_PATH%\include""
-)
-if %DEBUG%==1 (
-    set CXXFLAGS=/Zi /Od /EHsc /W2 /D WIN64 /I. /nologo
-    if %CPU_ONLY%==0 set "CXXFLAGS=!CXXFLAGS! /DWITHGPU /I"%CUDA_PATH%\include""
+    set CXXFLAGS=!CXXFLAGS! /DWITHGPU
+    set "CUDA_INC=!CUDA_PATH_LOC!\include"
 )
 
 echo.
 echo [INFO] Compiling C++ sources...
 
-REM Compile C++ files
 for %%f in (%SRC_CPP%) do (
     echo   %%f
-    cl %CXXFLAGS% /Fo"obj\%%~nf.obj" /c %%f
-    if !errorlevel! neq 0 (
-        echo [ERROR] Failed to compile %%f
-        exit /b 1
+    if %CPU_ONLY%==0 (
+        cl !CXXFLAGS! /I"!CUDA_INC!" /Foobj\%%~nf.obj /c %%f
+    ) else (
+        cl !CXXFLAGS! /Foobj\%%~nf.obj /c %%f
     )
+    if errorlevel 1 ( echo [ERROR] Failed to compile %%f & exit /b 1 )
 )
 
 for %%f in (%SRC_SECPK1%) do (
     echo   %%f
-    cl %CXXFLAGS% /Fo"obj\SECPK1\%%~nf.obj" /c %%f
-    if !errorlevel! neq 0 (
-        echo [ERROR] Failed to compile %%f
-        exit /b 1
-    )
-)
-
-REM Compile CUDA kernel
-if %CPU_ONLY%==0 (
-    echo.
-    echo [INFO] Compiling CUDA kernel (sm_%CCAP%)...
-    set NVCCFLAGS=-DWIN64 -DWITHGPU -maxrregcount=0 --ptxas-options=-v -m64 -I"%CUDA_PATH%\include" -gencode=arch=compute_%CCAP%,code=sm_%CCAP%
-    if %DEBUG%==1 (
-        set NVCCFLAGS=-G -O0 !NVCCFLAGS!
+    if %CPU_ONLY%==0 (
+        cl !CXXFLAGS! /I"!CUDA_INC!" /Foobj\SECPK1\%%~nf.obj /c %%f
     ) else (
-        set NVCCFLAGS=-O2 !NVCCFLAGS!
+        cl !CXXFLAGS! /Foobj\SECPK1\%%~nf.obj /c %%f
     )
-    "%NVCC%" !NVCCFLAGS! --compile -o obj\GPU\GPUEngine.obj -c GPU\GPUEngine.cu
-    if !errorlevel! neq 0 (
-        echo [ERROR] Failed to compile CUDA kernel
-        exit /b 1
-    )
+    if errorlevel 1 ( echo [ERROR] Failed to compile %%f & exit /b 1 )
 )
 
-REM Link
+if %CPU_ONLY%==1 goto :link
+
+echo.
+echo [INFO] Compiling CUDA kernel (sm_!CCAP!)...
+if %DEBUG%==1 (
+    "!NVCC!" -DWIN64 -DWITHGPU -G -O0 -maxrregcount=0 --ptxas-options=-v -m64 -I"!CUDA_INC!" -gencode=arch=compute_!CCAP!,code=sm_!CCAP! --compile -o obj\GPU\GPUEngine.obj -c GPU\GPUEngine.cu
+) else (
+    "!NVCC!" -DWIN64 -DWITHGPU -O2 -maxrregcount=0 --ptxas-options=-v -m64 -I"!CUDA_INC!" -gencode=arch=compute_!CCAP!,code=sm_!CCAP! --compile -o obj\GPU\GPUEngine.obj -c GPU\GPUEngine.cu
+)
+if errorlevel 1 ( echo [ERROR] Failed to compile CUDA kernel & exit /b 1 )
+
+:link
 echo.
 echo [INFO] Linking...
-set OBJ_FILES=obj\main.obj obj\Kangaroo.obj obj\HashTable.obj obj\Thread.obj obj\Timer.obj obj\Check.obj obj\Backup.obj obj\Network.obj obj\Merge.obj obj\PartMerge.obj
-set OBJ_FILES=%OBJ_FILES% obj\SECPK1\Int.obj obj\SECPK1\IntMod.obj obj\SECPK1\IntGroup.obj obj\SECPK1\Point.obj obj\SECPK1\SECP256K1.obj obj\SECPK1\Random.obj
-
+set OBJS=obj\main.obj obj\Kangaroo.obj obj\HashTable.obj obj\Thread.obj obj\Timer.obj obj\Check.obj obj\Backup.obj obj\Network.obj obj\Merge.obj obj\PartMerge.obj
+set OBJS=!OBJS! obj\SECPK1\Int.obj obj\SECPK1\IntMod.obj obj\SECPK1\IntGroup.obj obj\SECPK1\Point.obj obj\SECPK1\SECP256K1.obj obj\SECPK1\Random.obj
 set LIBS=ws2_32.lib
+
 if %CPU_ONLY%==0 (
-    set OBJ_FILES=!OBJ_FILES! obj\GPU\GPUEngine.obj
-    set "LIBS=!LIBS! "%CUDA_PATH%\lib\x64\cudart_static.lib""
+    set OBJS=!OBJS! obj\GPU\GPUEngine.obj
+    set "CUDA_LIB=!CUDA_PATH_LOC!\lib\x64\cudart_static.lib"
 )
 
-link /OUT:kangaroo.exe /nologo %OBJ_FILES% %LIBS%
-if %errorlevel% neq 0 (
-    echo [ERROR] Linking failed
-    exit /b 1
+if %CPU_ONLY%==0 (
+    link /OUT:kangaroo.exe /nologo !OBJS! !LIBS! "!CUDA_LIB!"
+) else (
+    link /OUT:kangaroo.exe /nologo !OBJS! !LIBS!
 )
+if errorlevel 1 ( echo [ERROR] Linking failed & exit /b 1 )
 
 echo.
 echo ============================================
 if exist kangaroo.exe (
-    echo  Build successful! Binary: kangaroo.exe
+    echo  Build successful^^!  Binary: kangaroo.exe
 ) else (
-    echo  Build failed!
+    echo  Build failed^^!
     exit /b 1
 )
 echo ============================================

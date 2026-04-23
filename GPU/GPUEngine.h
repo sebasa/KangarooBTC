@@ -25,10 +25,14 @@
 #ifdef USE_SYMMETRY
 #define KSIZE 13
 #else
-#define KSIZE 12
+#define KSIZE 10  // px(4)+py(4)+d(2): GPU accumulates 128-bit delta from 0
 #endif
 
-#define ITEM_SIZE   72
+#ifdef USE_SYMMETRY
+#define ITEM_SIZE   72  // x(32)+d(32)+kIdx(8)
+#else
+#define ITEM_SIZE   56  // x(32)+d(16)+kIdx(8)
+#endif
 #define ITEM_SIZE32 (ITEM_SIZE/4)
 
 typedef struct {
@@ -65,6 +69,7 @@ public:
 private:
 
   Int wildOffset;
+  Int *baseDistance;   // CPU-side 256-bit base distances (GPU accumulates 128-bit delta)
   int nbThread;
   int nbThreadPerGroup;
   uint64_t *inputKangaroo;
