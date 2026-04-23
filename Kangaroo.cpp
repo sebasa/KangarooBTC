@@ -200,162 +200,84 @@ bool Kangaroo::SendWebhook(const char *status, const char *privateKey) {
   if(webhookUrl.length() == 0)
     return false;
 
-  // Parse URL: https://host[:port]/path or http://host[:port]/path
-  string url = webhookUrl;
-  bool useSSL = false;
-  int defaultPort = 80;
-
-  if(url.substr(0, 8) == "https://") {
-    // We cannot do real TLS with raw sockets, warn and skip
-    // But we'll try a plain HTTP POST anyway (works behind reverse proxies / local endpoints)
-    url = url.substr(8);
-    useSSL = true;
-    defaultPort = 443;
-  } else if(url.substr(0, 7) == "http://") {
-    url = url.substr(7);
-  }
-
-  // Extract host, port, path
-  string host, path;
-  int webhookPort = defaultPort;
-  size_t pathPos = url.find('/');
-  if(pathPos != string::npos) {
-    host = url.substr(0, pathPos);
-    path = url.substr(pathPos);
-  } else {
-    host = url;
-    path = "/";
-  }
-
-  size_t colonPos = host.find(':');
-  if(colonPos != string::npos) {
-    webhookPort = atoi(host.substr(colonPos + 1).c_str());
-    host = host.substr(0, colonPos);
-  }
-
-  // Build hex value (public key of target)
+  // Build compressed public key hex of the target
   string hexValue = "";
   if(keyIdx < keysToSearch.size())
     hexValue = secp->GetPublicKeyHex(true, keysToSearch[keyIdx]);
 
-  // Build target puzzle info
+  // Puzzle number (bit size of the range)
   char puzzleStr[64];
   snprintf(puzzleStr, sizeof(puzzleStr), "%d", rangePower);
 
-  // Build HTTP POST request with custom headers
-  string body = "";
-  char request[4096];
-  snprintf(request, sizeof(request),
-    "POST %s HTTP/1.1\r\n"
-    "Host: %s\r\n"
-    "Content-Type: text/plain\r\n"
-    "Content-Length: %d\r\n"
-    "Connection: close\r\n"
-    "status: %s\r\n"
-    "hex: %s\r\n"
-    "workeraddress: %s\r\n"
-    "workername: %s\r\n"
-    "privatekey: %s\r\n"
-    "scantype: kangaroo\r\n"
-    "targetpuzzle: %s\r\n"
-    "\r\n",
-    path.c_str(),
-    host.c_str(),
-    (int)body.length(),
+  // Sanitize workerName: replace double-quotes to avoid breaking the shell command
+  string wname = workerName;
+  for(size_t i = 0; i < wname.size(); i++)
+    if(wname[i] == '"') wname[i] = '\'';
+
+  // Build curl command — handles both http:// and https:// natively.
+  // Headers are sent exactly as the server expects them.
+  // -s  : silent (no progress bar)
+  // -o NUL/dev/null : discard body
+  // -w "%{http_code}" : print only the HTTP status code to stdout
+  // --max-time 10 : abort if request takes more than 10 seconds
+  // --connect-timeout 5 : abort if connection takes more than 5 seconds
+  char cmd[4096];
+  snprintf(cmd, sizeof(cmd),
+    "curl -s"
+    " --connect-timeout 5"
+    " --max-time 10"
+    " -o \"%s\""
+    " -w \"%%{http_code}\""
+    " -X POST"
+    " -H \"status: %s\""
+    " -H \"hex: %s\""
+    " -H \"workeraddress: %s\""
+    " -H \"workername: %s\""
+    " -H \"privatekey: %s\""
+    " -H \"scantype: kangaroo\""
+    " -H \"targetpuzzle: %s\""
+    " \"%s\"",
+#ifdef WIN64
+    "NUL",
+#else
+    "/dev/null",
+#endif
     status,
     hexValue.c_str(),
-    workerName.c_str(),
-    workerName.c_str(),
+    wname.c_str(),
+    wname.c_str(),
     privateKey,
-    puzzleStr);
+    puzzleStr,
+    webhookUrl.c_str());
 
-  // Init winsock if needed
+  // Open pipe to curl
 #ifdef WIN64
-  static bool wsaInit = false;
-  if(!wsaInit) {
-    WSADATA WSAData;
-    int err = WSAStartup(MAKEWORD(2,2), &WSAData);
-    if(err != 0) {
-      ::printf("Webhook: WSAStartup failed error: %d\n", err);
-      return false;
-    }
-    wsaInit = true;
-  }
+  FILE *fp = _popen(cmd, "r");
+#else
+  FILE *fp = popen(cmd, "r");
 #endif
 
-  // Resolve hostname
-  struct hostent *he = gethostbyname(host.c_str());
-  if(he == NULL) {
-    ::printf("Webhook: Cannot resolve %s\n", host.c_str());
+  if(fp == NULL) {
+    ::printf("Webhook: Cannot run curl (is it installed?)\n");
     return false;
   }
 
-  // Create socket
-  SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  if(sock < 0) {
-    ::printf("Webhook: Cannot create socket\n");
-    return false;
-  }
-
-  struct sockaddr_in server;
-  memset(&server, 0, sizeof(server));
-  server.sin_family = AF_INET;
-  server.sin_port = htons((unsigned short)webhookPort);
-  memcpy(&server.sin_addr, he->h_addr_list[0], he->h_length);
-
-  // Set timeout
-#ifdef WIN64
-  DWORD timeout = 10000;
-  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
-  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
-#else
-  struct timeval tv;
-  tv.tv_sec = 10;
-  tv.tv_usec = 0;
-  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
-  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
-#endif
-
-  if(connect(sock, (struct sockaddr *)&server, sizeof(server)) < 0) {
-    ::printf("Webhook: Cannot connect to %s:%d\n", host.c_str(), webhookPort);
-#ifdef WIN64
-    closesocket(sock);
-#else
-    close(sock);
-#endif
-    return false;
-  }
-
-  // Send request
-  int len = (int)strlen(request);
-  int sent = send(sock, request, len, 0);
-  if(sent != len) {
-    ::printf("Webhook: Send failed\n");
-#ifdef WIN64
-    closesocket(sock);
-#else
-    close(sock);
-#endif
-    return false;
-  }
-
-  // Read response (just first line to check status)
-  char response[1024];
-  memset(response, 0, sizeof(response));
-  recv(sock, response, sizeof(response) - 1, 0);
+  // Read the HTTP status code printed by -w "%{http_code}"
+  char result[16] = {0};
+  if(fgets(result, sizeof(result), fp) == NULL)
+    result[0] = '0';
 
 #ifdef WIN64
-  closesocket(sock);
+  _pclose(fp);
 #else
-  close(sock);
+  pclose(fp);
 #endif
 
-  // Check HTTP status
-  bool success = (strstr(response, "200") != NULL);
+  bool success = (strncmp(result, "200", 3) == 0);
   if(success) {
     ::printf("Webhook: %s notification sent to %s\n", status, webhookUrl.c_str());
   } else {
-    ::printf("Webhook: Failed (%s) - %.80s\n", status, response);
+    ::printf("Webhook: Failed (%s) - HTTP %s\n", status, result[0] ? result : "no response");
   }
 
   return success;
